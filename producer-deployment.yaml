@@ -1,0 +1,74 @@
+# producer-deployment.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: producer-script
+  namespace: messaging
+data:
+  producer.py: |
+    import pika
+    import time
+    import sys
+    
+    def publish_messages():
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(
+                host='rabbitmq.messaging.svc.cluster.local',
+                credentials=pika.PlainCredentials('guest', 'guest')
+            )
+        )
+        channel = connection.channel()
+        channel.queue_declare(queue='task-queue', durable=True)
+        
+        message_count = 0
+        while True:
+            for i in range(100):
+                message = f"Message {message_count + i}"
+                channel.basic_publish(
+                    exchange='',
+                    routing_key='task-queue',
+                    body=message,
+                    properties=pika.BasicProperties(delivery_mode=2)
+                )
+            message_count += 100
+            print(f"Sent 100 messages (total: {message_count})", flush=True)
+            time.sleep(10)
+    
+    if __name__ == '__main__':
+        try:
+            publish_messages()
+        except KeyboardInterrupt:
+            print('Interrupted')
+            sys.exit(0)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: producer
+  namespace: messaging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: producer
+  template:
+    metadata:
+      labels:
+        app: producer
+    spec:
+      containers:
+        - name: producer
+          image: python:3.11-slim
+          command: 
+            - /bin/sh
+            - -c
+            - |
+              pip install pika --quiet
+              python /scripts/producer.py
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: producer-script

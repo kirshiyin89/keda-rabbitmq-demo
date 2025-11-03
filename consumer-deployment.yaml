@@ -1,0 +1,83 @@
+# consumer-deployment.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consumer-script
+  namespace: messaging
+data:
+  consumer.py: |
+    import pika
+    import time
+    import sys
+    import os
+    
+    def callback(ch, method, properties, body):
+        print(f"[{os.getenv('HOSTNAME')}] Received: {body.decode()}", flush=True)
+        # Simulate processing time
+        time.sleep(2)
+        print(f"[{os.getenv('HOSTNAME')}] Processed: {body.decode()}", flush=True)
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    
+    def consume_messages():
+        while True:
+            try:
+                connection = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        host='rabbitmq.messaging.svc.cluster.local',
+                        credentials=pika.PlainCredentials('guest', 'guest'),
+                        heartbeat=600,
+                        blocked_connection_timeout=300
+                    )
+                )
+                channel = connection.channel()
+                channel.queue_declare(queue='task-queue', durable=True)
+                channel.basic_qos(prefetch_count=1)
+                channel.basic_consume(queue='task-queue', on_message_callback=callback)
+                
+                print(f"[{os.getenv('HOSTNAME')}] Waiting for messages...", flush=True)
+                channel.start_consuming()
+            except Exception as e:
+                print(f"Connection error: {e}. Reconnecting in 5s...", flush=True)
+                time.sleep(5)
+    
+    if __name__ == '__main__':
+        consume_messages()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq-consumer
+  namespace: messaging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq-consumer
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-consumer
+    spec:
+      containers:
+        - name: consumer
+          image: python:3.11-slim
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install pika --quiet
+              python /scripts/consumer.py
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: script
+          configMap:
+            name: consumer-script
